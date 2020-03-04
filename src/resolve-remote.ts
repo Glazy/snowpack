@@ -1,5 +1,6 @@
 import cacache from 'cacache';
 import PQueue from 'p-queue';
+import chalk from 'chalk';
 import validatePackageName from 'validate-npm-package-name';
 import {SnowpackConfig} from './config.js';
 import {InstallTarget} from './scan-imports.js';
@@ -70,11 +71,28 @@ async function resolveDependency(
     console.warn(`Falling back to local copy...`);
     return null;
   }
-  const _pinnedUrl = headers['x-pinned-url'] as string;
-  if (!_pinnedUrl) {
-    throw new Error('X-Pinned-URL Header expected, but none received.');
+  let importUrlPath = headers['x-import-url'] as string;
+  let pinnedUrlPath = headers['x-pinned-url'] as string;
+  if (!pinnedUrlPath) {
+    console.log(
+      chalk.cyan(
+        `Building ${installSpecifier}@${packageSemver} remotely... (This will take a moment, but will be cached for future use)`,
+      ),
+    );
+    if (!importUrlPath) {
+      throw new Error('X-Import-URL header expected, but none received.');
+    }
+    const {statusCode, body} = await fetchCDNResource(importUrlPath);
+    if (statusCode !== 200) {
+      throw new Error(`Unexpected response [${statusCode}]: ${PIKA_CDN}${importUrlPath}`);
+    }
+    const {headers} = await fetchCDNResource(installUrl);
+    pinnedUrlPath = headers['x-pinned-url'] as string;
   }
-  const pinnedUrl = `${PIKA_CDN}${_pinnedUrl}`;
+  if (!pinnedUrlPath) {
+    throw new Error('X-pinned-URL header expected, but none received.');
+  }
+  const pinnedUrl = `${PIKA_CDN}${pinnedUrlPath}`;
   await cacache.put(RESOURCE_CACHE, installUrl, body, {
     metadata: {pinnedUrl},
   });
@@ -93,6 +111,8 @@ export async function resolveTargetsFromRemoteCDN(
   const allInstallSpecifiers = new Set(installTargets.map((dep) => dep.specifier));
   for (const installSpecifier of allInstallSpecifiers) {
     const installSemver: string =
+      (config.webDependencies || {})[installSpecifier] ||
+      (pkgManifest.webDependencies || {})[installSpecifier] ||
       (pkgManifest.dependencies || {})[installSpecifier] ||
       (pkgManifest.devDependencies || {})[installSpecifier] ||
       (pkgManifest.peerDependencies || {})[installSpecifier] ||
